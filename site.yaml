@@ -1,0 +1,10 @@
+---
+- name: Deploy docker registry
+  hosts: registry
+  vars:   
+    ansible_python_interpreter:  /root/ansible/docker-registry/venv/bin/python
+  vars_files:
+     ./vars.yaml
+  tasks:
+  - name: Registry deployment
+    import_tasks: task_docker_registry.yaml

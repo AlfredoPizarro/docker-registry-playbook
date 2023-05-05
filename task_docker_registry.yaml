@@ -1,0 +1,65 @@
+- name: Install packages 
+  yum:
+    name: "{{ item }}"
+    state: latest
+  loop:
+   - podman
+   - httpd-tools
+- name: Create mirror registry directories
+  file:
+    state: directory
+    path: "{{ item }}"
+  loop:
+   - /opt/registry/auth
+   - /opt/registry/certs
+   - /opt/registry/data
+- name: Check if registry certificate was created
+  stat: 
+    path: /opt/registry/certs/registry.crt
+  register: certificate_file
+- name: Self signed certificate creation
+  shell: openssl req -subj '/CN={{ ansible_fqdn  }}/O=OCP Self Signed/C=CL' -new -newkey rsa:2048 -sha256 -days 365 -nodes -x509 -keyout /opt/registry/certs/registry.key -out /opt/registry/certs/registry.crt -addext "subjectAltName = DNS:{{ ansible_fqdn }}"
+  when: certificate_file.stat.exists == False
+- name: Import certificate in local trust store
+  synchronize:
+     src: /opt/registry/certs/registry.crt
+     dest: /etc/pki/ca-trust/source/anchors/registry.crt 
+- name: Copy certificate to local directory for further use
+  synchronize:
+     src: /opt/registry/certs/registry.crt
+     dest: "{{  playbook_dir }}/files/registry.crt"
+- name: Update ca-trust
+  shell: update-ca-trust extract
+- name: Obtain registry container
+  podman_image:
+    name: docker.io/library/registry
+- name: Create auth file 
+  htpasswd: 
+    path: /opt/registry/auth/htpasswd
+    name: "{{ registry_user }}"
+    password: "{{ registry_password }}"
+    owner: root
+    group: root
+    crypt_scheme: bcrypt
+- name: Launch Registry
+  shell: |
+     podman run -d --name mirror-registry \
+     -p 5000:5000 --restart=always \
+     -v /opt/registry/data:/var/lib/registry:z \
+     -v /opt/registry/auth:/auth:z \
+     -e "REGISTRY_AUTH=htpasswd" \
+     -e "REGISTRY_AUTH_HTPASSWD_REALM=Registry Realm" \
+     -e "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd" \
+     -v /opt/registry/certs:/certs:z \
+     -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/registry.crt \
+     -e REGISTRY_HTTP_TLS_KEY=/certs/registry.key \
+     docker.io/library/registry
+  ignore_errors: yes
+- name: Add firewall rules
+  firewalld:
+    port: 5000/tcp
+    permanent: yes
+    state: enabled
+    immediate: yes
+- name: Create secret_registry.json for further use with ocp
+  shell: "podman login -u {{ registry_user }} -p {{ registry_password }} --authfile files/registry_secret.json {{ ansible_fqdn }}:5000"
